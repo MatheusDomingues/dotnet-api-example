@@ -1,0 +1,178 @@
+image: mcr.microsoft.com/dotnet/sdk:7.0
+definitions:
+    ### Descomentar caso necessario aumentar os recursos do container
+    #  services:
+    #    docker:
+    #      memory: 5120
+    #      type: docker
+
+    build: &build
+        name: build
+        script:
+            - dotnet build
+
+    #   test-unit: &test-unit
+    #     name: Unit Test
+    #     script:
+    #       - dotnet test
+
+    ##QA
+    build-qa: &buildpush-qa
+        name: Build & Push - QA
+        deployment: QA
+        image: atlassian/default-image:3
+        caches:
+            - docker
+            - dotnetcore
+        services: [docker]
+        ### Descomentar caso necessario aumentar os recursos do container
+        #    size: 2x
+        script:
+            # Build & Push - ECR AWS
+            - "echo ##################### PUSH ECR AWS ###################"
+            - apt-get update && apt-get install zip awscli -y
+            - export BITBUCKET_COMMIT_SHORT=$(echo $BITBUCKET_COMMIT | cut -c1-7)
+            - export BUILD_TAG="${BITBUCKET_BRANCH}_${BITBUCKET_BUILD_NUMBER}_${BITBUCKET_COMMIT_SHORT}_$RANDOM"
+            - export DOCKER_URI=$URI_API:latest
+            - export DOCKER_URI_VERSION=$URI_API:$BUILD_TAG
+            - aws configure set aws_access_key_id "${AWS_KEY_NC}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_NC}"
+            - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${URI_NC}
+            # API
+            - >-
+                docker build -t $DOCKER_URI 
+                --build-arg CONNECTIONSTRINGS__PRECOSELLOUT="${CONNECTIONSTRINGS__PRECOSELLOUT}" 
+                --build-arg NHUBUSERS__BASEURL="${NHUBUSERS__BASEURL}"
+                --build-arg AWS_KEY_NC="${AWS_KEY_NC}"
+                --build-arg AWS_SECRET_NC="${AWS_SECRET_NC}"   
+                -f api.WebApi/Dockerfile .
+            - docker push $DOCKER_URI
+            - docker tag $DOCKER_URI $DOCKER_URI_VERSION
+            - docker push $DOCKER_URI_VERSION
+            - echo -e "DOCKER_URI_VERSION=$DOCKER_URI_VERSION\nREPLICAS_NUMBER=$REPLICAS_NUMBER" > build-variables-qa.env
+            # WORKER
+            - >-
+                docker build -t $URI_NC/nhub-preco-sellout-worker:latest
+                --build-arg CONNECTIONSTRINGS__PRECOSELLOUT="${CONNECTIONSTRINGS__PRECOSELLOUT}" 
+                --build-arg NHUBUSERS__BASEURL="${NHUBUSERS__BASEURL}"
+                --build-arg AWS_KEY_NC="${AWS_KEY_NC}"
+                --build-arg AWS_SECRET_NC="${AWS_SECRET_NC}"   
+                -f api.Worker/Dockerfile .
+            - docker push $URI_NC/nhub-preco-sellout-worker:latest
+            - docker tag $URI_NC/nhub-preco-sellout-worker:latest  $URI_NC/nhub-preco-sellout-worker:$BUILD_TAG
+            - docker push $URI_NC/nhub-preco-sellout-worker:$BUILD_TAG
+            - echo IMAGE_WORKER=$URI_NC/nhub-preco-sellout-worker:$BUILD_TAG >> build-variables-qa.env
+        artifacts:
+            - build-variables-qa.env
+
+    deploy-qa: &deploy-qa
+        name: Deployment - QA
+        deployment: DEPLOY-QA
+        image: atlassian/default-image:3
+        caches:
+            - dotnetcore
+        script:
+            # DEPLOY ARGOCD
+            - "echo ##################### ARGOCD DEPLOY #####################"
+            - git config --global user.email "devops@levva.io"
+            - git config --global user.name "levvadevops"
+            - source build-variables-qa.env
+            - git clone https://${PIPELINE_USER}:${PIPELINE_TOKEN}@bitbucket.org/gruponc/stacks.git
+            - cd stacks
+            - sed "s@{{DOCKER_URI_VERSION}}@$DOCKER_URI_VERSION@g; s@{{REPLICAS_NUMBER}}@$REPLICAS_NUMBER@g;" qa/clicksales/nhub-preco-sellout/template/deployment.teml > qa/clicksales/nhub-preco-sellout/deployment.yaml
+            - sed "s@{{IMAGE_WORKER}}@$IMAGE_WORKER@g; s@{{REPLICAS_NUMBER}}@$REPLICAS_NUMBER@g;" qa/nhub/nhub-preco-sellout-worker/template/deployment.teml > qa/nhub/nhub-preco-sellout-worker/deployment.yaml
+            - git add qa/clicksales/nhub-preco-sellout/deployment.yaml qa/nhub/nhub-preco-sellout-worker/deployment.yaml
+            - git commit -m "[NHUB-PRECOSELLOUT] ${BITBUCKET_BRANCH} - ${BITBUCKET_COMMIT_SHORT} - ${BITBUCKET_BUILD_NUMBER} / CiCd integration automated."
+            - git push
+
+    ##PRD
+    build-prd: &buildpush-prd
+        name: Build & Push - PRD
+        deployment: PRD
+        image: atlassian/default-image:3
+        caches:
+            - docker
+            - dotnetcore
+        services: [docker]
+        ### Descomentar caso necessario aumentar os recursos do container
+        #    size: 2x
+        script:
+            # Build & Push - ECR AWS
+            - "echo ##################### PUSH ECR AWS ###################"
+            - apt-get update && apt-get install zip awscli -y
+            - export BITBUCKET_COMMIT_SHORT=$(echo $BITBUCKET_COMMIT | cut -c1-7)
+            - export BUILD_TAG="${BITBUCKET_BRANCH}_${BITBUCKET_BUILD_NUMBER}_${BITBUCKET_COMMIT_SHORT}_$RANDOM"
+            - export DOCKER_URI=$URI_API:latest
+            - export DOCKER_URI_VERSION=$URI_API:$BUILD_TAG
+            - aws configure set aws_access_key_id "${AWS_KEY_NC}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_NC}"
+            - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${URI_NC}
+            # API
+            - >-
+                docker build -t $DOCKER_URI 
+                --build-arg CONNECTIONSTRINGS__PRECOSELLOUT="${CONNECTIONSTRINGS__PRECOSELLOUT}" 
+                --build-arg NHUBUSERS__BASEURL="${NHUBUSERS__BASEURL}"
+                --build-arg AWS_KEY_NC="${AWS_KEY_NC}"
+                --build-arg AWS_SECRET_NC="${AWS_SECRET_NC}"   
+                -f api.WebApi/Dockerfile .
+            - docker push $DOCKER_URI
+            - docker tag $DOCKER_URI $DOCKER_URI_VERSION
+            - docker push $DOCKER_URI_VERSION
+            - echo -e "DOCKER_URI_VERSION=$DOCKER_URI_VERSION\nREPLICAS_NUMBER=$REPLICAS_NUMBER" > build-variables-prd.env
+            # WORKER
+            - >-
+                docker build -t $URI_NC/nhub-preco-sellout-worker:latest
+                --build-arg CONNECTIONSTRINGS__PRECOSELLOUT="${CONNECTIONSTRINGS__PRECOSELLOUT}" 
+                --build-arg NHUBUSERS__BASEURL="${NHUBUSERS__BASEURL}"
+                --build-arg AWS_KEY_NC="${AWS_KEY_NC}"
+                --build-arg AWS_SECRET_NC="${AWS_SECRET_NC}"   
+                -f api.Worker/Dockerfile .
+            - docker push $URI_NC/nhub-preco-sellout-worker:latest
+            - docker tag $URI_NC/nhub-preco-sellout-worker:latest  $URI_NC/nhub-preco-sellout-worker:$BUILD_TAG
+            - docker push $URI_NC/nhub-preco-sellout-worker:$BUILD_TAG
+            - echo IMAGE_WORKER=$URI_NC/nhub-preco-sellout-worker:$BUILD_TAG >> build-variables-prd.env
+        artifacts:
+            - build-variables-prd.env
+
+    deploy-prd: &deploy-prd
+        name: Deployment - PRD
+        deployment: DEPLOY-PRD
+        image: atlassian/default-image:3
+        caches:
+            - dotnetcore
+        script:
+            # DEPLOY ARGOCD
+            - "echo ##################### ARGOCD DEPLOY #####################"
+            - git config --global user.email "devops@levva.io"
+            - git config --global user.name "levvadevops"
+            - source build-variables-prd.env
+            - git clone https://${PIPELINE_USER}:${PIPELINE_TOKEN}@bitbucket.org/gruponc/stacks.git
+            - cd stacks
+            - sed "s@{{DOCKER_URI_VERSION}}@$DOCKER_URI_VERSION@g; s@{{REPLICAS_NUMBER}}@$REPLICAS_NUMBER@g;" prd/clicksales/nhub-preco-sellout/template/deployment.teml > prd/clicksales/nhub-preco-sellout/deployment.yaml
+            - sed "s@{{IMAGE_WORKER}}@$IMAGE_WORKER@g; s@{{REPLICAS_NUMBER}}@$REPLICAS_NUMBER@g;" prd/nhub/nhub-preco-sellout-worker/template/deployment.teml > prd/nhub/nhub-preco-sellout-worker/deployment.yaml
+            - git add prd/clicksales/nhub-preco-sellout/deployment.yaml prd/nhub/nhub-preco-sellout-worker/deployment.yaml
+            - git commit -m "[NHUB-PRECOSELLOUT] ${BITBUCKET_BRANCH} - ${BITBUCKET_COMMIT_SHORT} - ${BITBUCKET_BUILD_NUMBER} / CiCd integration automated."
+            - git push
+
+pipelines:
+    default:
+        - step: *build
+        # - step: *test-unit
+
+    pull-requests:
+        "**":
+            - step: *build
+        #   - step: *test-unit
+
+    branches:
+        master:
+            - step: *build
+            #   - step: *test-unit
+            - step: *buildpush-prd
+            - step: *deploy-prd
+
+        qa:
+            - step: *build
+            #   - step: *test-unit
+            - step: *buildpush-qa
+            - step: *deploy-qa
